@@ -38,6 +38,7 @@
 #include <driver/gpio.h>
 #include <driver/adc.h>
 #include <esp32-hal-adc.h>
+#include <freertos/semphr.h>
 
 // ==================== KONFIGURATION ====================
 // Diese Werte können angepasst werden
@@ -113,6 +114,8 @@ struct SensorData {
 };
 
 static SensorData current_data;
+
+SemaphoreHandle_t data_mutex;
 
 // Task Handles für Dual-Core
 TaskHandle_t zigbeeTaskHandle = NULL;
@@ -201,6 +204,8 @@ uint8_t calculateBatteryPercent(float voltage) {
  */
 void readSensorData() {
     ESP_LOGI(TAG, "Lese Sensordaten...");
+
+    xSemaphoreTake(data_mutex, portMAX_DELAY);
     
     // Bodenfeuchte-Sensor einschalten
     digitalWrite(SOIL_SENSOR_POWER_PIN, HIGH);
@@ -247,8 +252,9 @@ void readSensorData() {
             current_data.soil_moisture, 
             soilCategoryToString(current_data.soil_category));
     ESP_LOGI(TAG, "Batterie: %.2fV (%d%%)", 
-            current_data.battery_voltage, 
+            current_data.battery_voltage,
             current_data.battery_percent);
+    xSemaphoreGive(data_mutex);
 }
 
 // ==================== ZIGBEE FUNKTIONEN ====================
@@ -305,6 +311,11 @@ static void esp_zb_app_signal_handler(esp_zb_app_signal_t *signal_struct) {
  * Zigbee Attribute setzen
  */
 static void esp_zb_set_attributes(void) {
+    SensorData data;
+    xSemaphoreTake(data_mutex, portMAX_DELAY);
+    data = current_data;
+    xSemaphoreGive(data_mutex);
+
     // Basic Cluster Attribute
     esp_zb_attribute_list_t *basic_cluster = esp_zb_zcl_attr_list_create(ESP_ZB_ZCL_CLUSTER_ID_BASIC);
     esp_zb_basic_cluster_add_attr(basic_cluster, ESP_ZB_ZCL_ATTR_BASIC_MANUFACTURER_NAME_ID, 
@@ -318,7 +329,7 @@ static void esp_zb_set_attributes(void) {
     // Temperature Measurement Cluster
     esp_zb_attribute_list_t *temperature_cluster = 
         esp_zb_zcl_attr_list_create(ESP_ZB_ZCL_CLUSTER_ID_TEMP_MEASUREMENT);
-    int16_t temp_value = (int16_t)(current_data.temperature * 100);
+    int16_t temp_value = (int16_t)(data.temperature * 100);
     esp_zb_temperature_meas_cluster_add_attr(temperature_cluster, 
         ESP_ZB_ZCL_ATTR_TEMP_MEASUREMENT_VALUE_ID, &temp_value);
     int16_t temp_min = -4000; // -40°C
@@ -331,7 +342,7 @@ static void esp_zb_set_attributes(void) {
     // Humidity Measurement Cluster
     esp_zb_attribute_list_t *humidity_cluster = 
         esp_zb_zcl_attr_list_create(ESP_ZB_ZCL_CLUSTER_ID_REL_HUMIDITY_MEASUREMENT);
-    uint16_t humidity_value = (uint16_t)(current_data.humidity * 100);
+    uint16_t humidity_value = (uint16_t)(data.humidity * 100);
     esp_zb_humidity_meas_cluster_add_attr(humidity_cluster,
         ESP_ZB_ZCL_ATTR_REL_HUMIDITY_MEASUREMENT_VALUE_ID, &humidity_value);
     uint16_t humidity_min = 0;
@@ -344,7 +355,7 @@ static void esp_zb_set_attributes(void) {
     // Pressure Measurement Cluster (Custom)
     esp_zb_attribute_list_t *pressure_cluster = 
         esp_zb_zcl_attr_list_create(ESP_ZB_ZCL_CLUSTER_ID_PRESSURE_MEASUREMENT);
-    int16_t pressure_value = (int16_t)(current_data.pressure * 10);
+    int16_t pressure_value = (int16_t)(data.pressure * 10);
     esp_zb_custom_cluster_add_custom_attr(pressure_cluster, 0x0000, 
         ESP_ZB_ZCL_ATTR_TYPE_S16, ESP_ZB_ZCL_ATTR_ACCESS_READ_ONLY | ESP_ZB_ZCL_ATTR_ACCESS_REPORTING,
         &pressure_value);
@@ -352,17 +363,17 @@ static void esp_zb_set_attributes(void) {
     // Power Configuration Cluster (Battery)
     esp_zb_attribute_list_t *power_cfg_cluster = 
         esp_zb_zcl_attr_list_create(ESP_ZB_ZCL_CLUSTER_ID_POWER_CONFIG);
-    uint8_t battery_voltage_raw = (uint8_t)(current_data.battery_voltage * 10); // 0.1V units
+    uint8_t battery_voltage_raw = (uint8_t)(data.battery_voltage * 10); // 0.1V units
     esp_zb_power_config_cluster_add_attr(power_cfg_cluster,
         ESP_ZB_ZCL_ATTR_POWER_CONFIG_BATTERY_VOLTAGE_ID, &battery_voltage_raw);
-    uint8_t battery_percentage = current_data.battery_percent * 2; // 0.5% units
+    uint8_t battery_percentage = data.battery_percent * 2; // 0.5% units
     esp_zb_power_config_cluster_add_attr(power_cfg_cluster,
         ESP_ZB_ZCL_ATTR_POWER_CONFIG_BATTERY_PERCENTAGE_REMAINING_ID, &battery_percentage);
     
     // Analog Input Cluster für Bodenfeuchte
     esp_zb_attribute_list_t *analog_input_cluster = 
         esp_zb_zcl_attr_list_create(ESP_ZB_ZCL_CLUSTER_ID_ANALOG_INPUT);
-    float soil_moisture_scaled = (float)current_data.soil_moisture / 4095.0 * 100.0;
+    float soil_moisture_scaled = (float)data.soil_moisture / 4095.0 * 100.0;
     esp_zb_analog_input_cluster_add_attr(analog_input_cluster,
         ESP_ZB_ZCL_ATTR_ANALOG_INPUT_PRESENT_VALUE_ID, &soil_moisture_scaled);
     
@@ -513,7 +524,12 @@ void sensorTask(void *pvParameters) {
  */
 void handleRoot() {
     if (!webServer) return;
-    
+
+    SensorData data;
+    xSemaphoreTake(data_mutex, portMAX_DELAY);
+    data = current_data;
+    xSemaphoreGive(data_mutex);
+
     String html = "<html><head><title>ESP32-C6 Sensor</title>";
     html += "<meta charset='UTF-8'>";
     html += "<style>body{font-family:Arial;margin:20px;}";
@@ -528,15 +544,15 @@ void handleRoot() {
     html += "<h2>Aktuelle Messwerte</h2>";
     html += "<table>";
     html += "<tr><th>Parameter</th><th>Wert</th></tr>";
-    html += "<tr><td>Temperatur</td><td>" + String(current_data.temperature, 2) + " °C</td></tr>";
-    html += "<tr><td>Luftfeuchtigkeit</td><td>" + String(current_data.humidity, 2) + " %</td></tr>";
-    html += "<tr><td>Luftdruck</td><td>" + String(current_data.pressure, 2) + " hPa</td></tr>";
-    html += "<tr><td>Abs. Luftfeuchtigkeit</td><td>" + String(current_data.abs_humidity, 2) + " g/m³</td></tr>";
-    html += "<tr><td>Bodenfeuchte</td><td>" + String(current_data.soil_moisture) + " (";
-    html += soilCategoryToString(current_data.soil_category);
+    html += "<tr><td>Temperatur</td><td>" + String(data.temperature, 2) + " °C</td></tr>";
+    html += "<tr><td>Luftfeuchtigkeit</td><td>" + String(data.humidity, 2) + " %</td></tr>";
+    html += "<tr><td>Luftdruck</td><td>" + String(data.pressure, 2) + " hPa</td></tr>";
+    html += "<tr><td>Abs. Luftfeuchtigkeit</td><td>" + String(data.abs_humidity, 2) + " g/m³</td></tr>";
+    html += "<tr><td>Bodenfeuchte</td><td>" + String(data.soil_moisture) + " (";
+    html += soilCategoryToString(data.soil_category);
     html += ")</td></tr>";
-    html += "<tr><td>Batterie</td><td>" + String(current_data.battery_voltage, 2) + " V (";
-    html += String(current_data.battery_percent) + "%)</td></tr>";
+    html += "<tr><td>Batterie</td><td>" + String(data.battery_voltage, 2) + " V (";
+    html += String(data.battery_percent) + "%)</td></tr>";
     html += "</table>";
     
     // Konfiguration
@@ -560,16 +576,20 @@ void handleRoot() {
  */
 void handleJSON() {
     if (!webServer) return;
-    
+    SensorData data;
+    xSemaphoreTake(data_mutex, portMAX_DELAY);
+    data = current_data;
+    xSemaphoreGive(data_mutex);
+
     String json = "{";
-    json += "\"temperature\":" + String(current_data.temperature, 2) + ",";
-    json += "\"humidity\":" + String(current_data.humidity, 2) + ",";
-    json += "\"pressure\":" + String(current_data.pressure, 2) + ",";
-    json += "\"abs_humidity\":" + String(current_data.abs_humidity, 2) + ",";
-    json += "\"soil_moisture\":" + String(current_data.soil_moisture) + ",";
-    json += "\"soil_category\":\"" + String(soilCategoryToString(current_data.soil_category)) + "\",";
-    json += "\"battery_voltage\":" + String(current_data.battery_voltage, 2) + ",";
-    json += "\"battery_percent\":" + String(current_data.battery_percent) + ",";
+    json += "\"temperature\":" + String(data.temperature, 2) + ",";
+    json += "\"humidity\":" + String(data.humidity, 2) + ",";
+    json += "\"pressure\":" + String(data.pressure, 2) + ",";
+    json += "\"abs_humidity\":" + String(data.abs_humidity, 2) + ",";
+    json += "\"soil_moisture\":" + String(data.soil_moisture) + ",";
+    json += "\"soil_category\":\"" + String(soilCategoryToString(data.soil_category)) + "\",";
+    json += "\"battery_voltage\":" + String(data.battery_voltage, 2) + ",";
+    json += "\"battery_percent\":" + String(data.battery_percent) + ",";
     json += "\"zigbee_connected\":" + String(zigbee_initialized ? "true" : "false") + ",";
     json += "\"wifi_connected\":" + String(WiFi.isConnected() ? "true" : "false") + ",";
     json += "\"measure_interval\":" + String(measure_interval);
@@ -696,7 +716,9 @@ void setup() {
     ESP_LOGI(TAG, "Chip Revision: %d", ESP.getChipRevision());
     ESP_LOGI(TAG, "Flash Size: %d KB", ESP.getFlashChipSize() / 1024);
     ESP_LOGI(TAG, "Free Heap: %d bytes", ESP.getFreeHeap());
-    
+
+    data_mutex = xSemaphoreCreateMutex();
+
     // Preferences initialisieren
     preferences.begin("sensor_config", false);
     measure_interval = preferences.getUInt("interval", DEFAULT_MEASURE_INTERVAL);
