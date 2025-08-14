@@ -600,9 +600,9 @@ void zigbeeTask(void *pvParameters) {
     
     // Zigbee main loop starten
     ESP_ERROR_CHECK(esp_zb_start(false));
-    esp_zb_main_loop_iteration();
-    
-    vTaskDelete(NULL);
+    while (true) {
+        esp_zb_main_loop_iteration();
+    }
 }
 
 // ==================== SENSOR TASK ====================
