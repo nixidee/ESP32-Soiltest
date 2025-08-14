@@ -27,6 +27,7 @@
 #include <WiFi.h>
 #include <WebServer.h>
 #include <Preferences.h>
+#include <string.h>
 #include <esp_zigbee_core.h>
 #include <esp_check.h>
 #include <esp_log.h>
@@ -254,13 +255,97 @@ void readSensorData() {
 // ==================== ZIGBEE FUNKTIONEN ====================
 
 /**
+ * Custom ZCL action handler
+ *  - Handles manufacturer specific attributes in the Basic cluster
+ */
+static esp_err_t zcl_action_handler(esp_zb_core_action_t action, void *event, uint16_t manufacturer_code)
+{
+    ESP_UNUSED(manufacturer_code);
+
+    switch (action) {
+        case ESP_ZB_CORE_ACTION_WRITE_ATTR: {
+            esp_zb_zcl_set_attr_value_t *set_attr = (esp_zb_zcl_set_attr_value_t *)event;
+            if (set_attr->cluster_id != ESP_ZB_ZCL_CLUSTER_ID_BASIC) {
+                break;
+            }
+
+            switch (set_attr->attribute_id) {
+                case 0x0201: { // measure interval
+                    uint16_t new_interval = *(uint16_t *)set_attr->value;
+                    if (new_interval < MIN_MEASURE_INTERVAL) new_interval = MIN_MEASURE_INTERVAL;
+                    if (new_interval > MAX_MEASURE_INTERVAL) new_interval = MAX_MEASURE_INTERVAL;
+                    measure_interval = new_interval;
+                    preferences.putUInt("interval", measure_interval);
+                    break;
+                }
+                case 0x0202: { // wifi ssid
+                    const char *ssid = (const char *)set_attr->value;
+                    preferences.putString("wifi_ssid", String(ssid));
+                    break;
+                }
+                case 0x0203: { // wifi password
+                    const char *pass = (const char *)set_attr->value;
+                    preferences.putString("wifi_pass", String(pass));
+                    break;
+                }
+                case 0x0204: { // webserver enable
+                    uint8_t enable = *(uint8_t *)set_attr->value;
+                    webserver_enabled = enable ? true : false;
+                    preferences.putBool("webserver", webserver_enabled);
+                    break;
+                }
+                default:
+                    break;
+            }
+            break;
+        }
+        case ESP_ZB_CORE_ACTION_READ_ATTR: {
+            esp_zb_zcl_get_attr_value_t *get_attr = (esp_zb_zcl_get_attr_value_t *)event;
+            if (get_attr->cluster_id != ESP_ZB_ZCL_CLUSTER_ID_BASIC) {
+                break;
+            }
+
+            switch (get_attr->attribute_id) {
+                case 0x0201: {
+                    *(uint16_t *)get_attr->value = (uint16_t)measure_interval;
+                    break;
+                }
+                case 0x0202: {
+                    const String ssid = preferences.getString("wifi_ssid", DEFAULT_WIFI_SSID);
+                    strncpy((char *)get_attr->value, ssid.c_str(), get_attr->size);
+                    break;
+                }
+                case 0x0203: {
+                    const String pass = preferences.getString("wifi_pass", DEFAULT_WIFI_PASSWORD);
+                    strncpy((char *)get_attr->value, pass.c_str(), get_attr->size);
+                    break;
+                }
+                case 0x0204: {
+                    *(uint8_t *)get_attr->value = webserver_enabled ? 1 : 0;
+                    break;
+                }
+                default:
+                    break;
+            }
+            break;
+        }
+        default:
+            break;
+    }
+    return ESP_OK;
+}
+
+/**
  * Zigbee Stack Signal Handler
  */
 static void esp_zb_app_signal_handler(esp_zb_app_signal_t *signal_struct) {
     uint32_t *p_sg_p = signal_struct->p_app_signal;
     esp_err_t err_status = signal_struct->esp_err_status;
     esp_zb_app_signal_type_t sig_type = *p_sg_p;
-    
+
+    // Register ZCL command handler
+    esp_zb_core_action_handler_register(zcl_action_handler);
+
     switch (sig_type) {
         case ESP_ZB_ZDO_SIGNAL_SKIP_STARTUP:
             ESP_LOGI(TAG, "Zigbee stack initialized");
