@@ -33,6 +33,7 @@
 #include <nvs_flash.h>
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
+#include <freertos/queue.h>
 #include <esp_sleep.h>
 #include <esp_pm.h>
 #include <driver/gpio.h>
@@ -97,7 +98,7 @@ static bool zigbee_initialized = false;
 static bool wifi_enabled = false;
 static bool webserver_enabled = false;
 static uint32_t measure_interval = DEFAULT_MEASURE_INTERVAL;
-static volatile bool button_pressed = false;
+QueueHandle_t buttonEventQueue = NULL;
 
 // Sensor Daten Struktur
 struct SensorData {
@@ -118,6 +119,7 @@ static SensorData current_data;
 TaskHandle_t zigbeeTaskHandle = NULL;
 TaskHandle_t sensorTaskHandle = NULL;
 TaskHandle_t webTaskHandle = NULL;
+TaskHandle_t buttonTaskHandle = NULL;
 
 // ==================== HILFSFUNKTIONEN ====================
 
@@ -413,6 +415,33 @@ void sendZigbeeReport() {
 }
 
 /**
+ * Führt eine komplette Messung inkl. optionalem Zigbee-Report und Deep-Sleep aus
+ */
+static void performMeasurement() {
+    // Sensordaten lesen
+    readSensorData();
+
+    // Zigbee Report senden
+    if (zigbee_initialized) {
+        sendZigbeeReport();
+    }
+
+    // Deep Sleep vorbereiten (falls aktiviert)
+    if (ENABLE_DEEP_SLEEP && zigbee_initialized) {
+        ESP_LOGI(TAG, "Gehe in Deep Sleep für %d Sekunden", measure_interval);
+
+        // Wake-up Timer setzen
+        esp_sleep_enable_timer_wakeup(measure_interval * 1000000ULL);
+
+        // Wake-up bei Button Press
+        esp_sleep_enable_ext0_wakeup((gpio_num_t)BUTTON_PIN, 0);
+
+        // Deep Sleep starten
+        esp_deep_sleep_start();
+    }
+}
+
+/**
  * Zigbee Task (läuft auf HP Core)
  */
 void zigbeeTask(void *pvParameters) {
@@ -467,42 +496,24 @@ void zigbeeTask(void *pvParameters) {
  */
 void sensorTask(void *pvParameters) {
     ESP_LOGI(TAG, "Sensor Task gestartet auf Core %d", xPortGetCoreID());
-    
+
     TickType_t xLastWakeTime = xTaskGetTickCount();
-    
     while (true) {
-        // Warte auf Intervall oder Button
-        if (button_pressed || 
-            (xTaskGetTickCount() - xLastWakeTime) >= pdMS_TO_TICKS(measure_interval * 1000)) {
-            
-            button_pressed = false;
-            xLastWakeTime = xTaskGetTickCount();
-            
-            // Sensordaten lesen
-            readSensorData();
-            
-            // Zigbee Report senden
-            if (zigbee_initialized) {
-                sendZigbeeReport();
-            }
-            
-            // Deep Sleep vorbereiten (falls aktiviert)
-            if (ENABLE_DEEP_SLEEP && zigbee_initialized) {
-                ESP_LOGI(TAG, "Gehe in Deep Sleep für %d Sekunden", measure_interval);
-                
-                // Wake-up Timer setzen
-                esp_sleep_enable_timer_wakeup(measure_interval * 1000000ULL);
-                
-                // Wake-up bei Button Press
-                esp_sleep_enable_ext0_wakeup((gpio_num_t)BUTTON_PIN, 0);
-                
-                // Deep Sleep starten
-                esp_deep_sleep_start();
-            }
+        vTaskDelayUntil(&xLastWakeTime, pdMS_TO_TICKS(measure_interval * 1000));
+        performMeasurement();
+    }
+}
+
+/**
+ * Button Task - verarbeitet Button-Ereignisse
+ */
+void buttonTask(void *pvParameters) {
+    ESP_LOGI(TAG, "Button Task gestartet auf Core %d", xPortGetCoreID());
+    uint32_t msg;
+    while (true) {
+        if (xQueueReceive(buttonEventQueue, &msg, portMAX_DELAY) == pdTRUE) {
+            performMeasurement();
         }
-        
-        // Task yield
-        vTaskDelay(pdMS_TO_TICKS(100));
     }
 }
 
@@ -643,7 +654,14 @@ void webServerTask(void *pvParameters) {
  * Button Interrupt Handler
  */
 void IRAM_ATTR buttonISR() {
-    button_pressed = true;
+    uint32_t msg = 1;
+    BaseType_t xHigherPriorityTaskWoken = pdFALSE;
+    if (buttonEventQueue) {
+        xQueueSendFromISR(buttonEventQueue, &msg, &xHigherPriorityTaskWoken);
+        if (xHigherPriorityTaskWoken) {
+            portYIELD_FROM_ISR();
+        }
+    }
 }
 
 // ==================== WIFI FUNKTIONEN ====================
@@ -707,7 +725,10 @@ void setup() {
     pinMode(LED_PIN, OUTPUT);
     digitalWrite(LED_PIN, LOW);
     pinMode(BUTTON_PIN, INPUT_PULLUP);
-    
+
+    // Queue für Button Events
+    buttonEventQueue = xQueueCreate(10, sizeof(uint32_t));
+
     // Button Interrupt
     attachInterrupt(digitalPinToInterrupt(BUTTON_PIN), buttonISR, FALLING);
     
@@ -774,6 +795,17 @@ void setup() {
         NULL,
         3,
         &sensorTaskHandle,
+        0  // HP Core
+    );
+
+    // Button Task auf HP Core (Core 0)
+    xTaskCreatePinnedToCore(
+        buttonTask,
+        "button_task",
+        2048,
+        NULL,
+        4,
+        &buttonTaskHandle,
         0  // HP Core
     );
     
