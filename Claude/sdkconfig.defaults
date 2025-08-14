@@ -1,0 +1,27 @@
+# --- Target & Arduino-Integration ---
+CONFIG_IDF_TARGET="esp32c6"
+CONFIG_IDF_TARGET_ESP32C6=y
+CONFIG_AUTOSTART_ARDUINO=y          # Arduino setup()/loop() nutzen
+CONFIG_ARDUHAL_ESP_LOG=y
+
+# --- Logging / Compiler ---
+CONFIG_LOG_DEFAULT_LEVEL=3          # = INFO
+CONFIG_COMPILER_OPTIMIZATION_PERF=y
+
+# --- IEEE 802.15.4 / Zigbee ---
+CONFIG_IEEE802154_ENABLED=y
+CONFIG_ZB_ENABLED=y
+CONFIG_ZB_ZED=y                     # End Device (ZED). Für Router/Coordinator: entsprechend umstellen.
+CONFIG_ESP_COEX_SW_COEXIST_ENABLE=y # SW-Coex für WiFi <-> 802.15.4
+# (Coexistence ist für parallelen Funkbetrieb relevant.) :contentReference[oaicite:5]{index=5}
+
+# --- Power Management ---
+CONFIG_PM_ENABLE=y
+CONFIG_FREERTOS_USE_TICKLESS_IDLE=y
+
+# --- USB CDC (TinyUSB) ---
+CONFIG_TINYUSB_ENABLED=y
+
+# --- Flash-Parameter (zur Sicherheit konsistent setzen) ---
+CONFIG_ESPTOOLPY_FLASHMODE_DIO=y
+CONFIG_ESPTOOLPY_FLASHFREQ_80M=y
