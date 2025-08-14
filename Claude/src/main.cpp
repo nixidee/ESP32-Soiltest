@@ -38,6 +38,7 @@
 #include <driver/gpio.h>
 #include <driver/adc.h>
 #include <esp32-hal-adc.h>
+#include <esp_adc_cal.h>
 
 // ==================== KONFIGURATION ====================
 // Diese Werte können angepasst werden
@@ -78,6 +79,11 @@
 // WiFi Standard-Konfiguration
 #define DEFAULT_WIFI_SSID       "YourWiFiSSID"
 #define DEFAULT_WIFI_PASSWORD   "YourWiFiPassword"
+
+// FireBeetle 2 ESP32-C6 batteriespannungsteiler (R1=100k, R2=100k)
+#define VBAT_R1                100000.0f
+#define VBAT_R2                100000.0f
+#define VBAT_DIVIDER_RATIO     ((VBAT_R1 + VBAT_R2) / VBAT_R2) // 2.0
 
 // ==================== GLOBALE VARIABLEN ====================
 
@@ -168,15 +174,35 @@ const char* soilCategoryToString(uint8_t category) {
 }
 
 /**
- * Liest die Batteriespannung
- * FireBeetle hat Spannungsteiler 1:1, max 3.3V ADC
+ * Liest die Batteriespannung mit kalibriertem ADC
  * @return Batteriespannung in V
  */
 float readBatteryVoltage() {
-    // ADC konfigurieren
-    int adc_value = analogRead(BATTERY_VOLTAGE_PIN);
-    // FireBeetle 2 hat 1:1 Spannungsteiler, ADC max 3.3V bei 12bit (4095)
-    float voltage = (adc_value / 4095.0) * 3.3 * 2.0; // *2 wegen Spannungsteiler
+    static bool adc_calibrated = false;
+    static esp_adc_cal_characteristics_t adc_chars;
+
+    if (!adc_calibrated) {
+        analogReadResolution(12);
+        analogSetPinAttenuation(BATTERY_VOLTAGE_PIN, ADC_11db);
+
+        esp_adc_cal_value_t val_type = esp_adc_cal_characterize(ADC_UNIT_1,
+                                                               ADC_ATTEN_DB_11,
+                                                               ADC_WIDTH_BIT_12,
+                                                               0,
+                                                               &adc_chars);
+        if (val_type == ESP_ADC_CAL_VAL_EFUSE_TP) {
+            ESP_LOGI(TAG, "ADC two-point calibration loaded from eFuse");
+        } else if (val_type == ESP_ADC_CAL_VAL_EFUSE_VREF) {
+            ESP_LOGI(TAG, "ADC Vref calibration loaded from eFuse");
+        } else {
+            ESP_LOGW(TAG, "ADC calibration default Vref used");
+        }
+        adc_calibrated = true;
+    }
+
+    int adc_raw = analogRead(BATTERY_VOLTAGE_PIN);
+    uint32_t voltage_mv = esp_adc_cal_raw_to_voltage(adc_raw, &adc_chars);
+    float voltage = (voltage_mv / 1000.0f) * VBAT_DIVIDER_RATIO;
     return voltage;
 }
 
