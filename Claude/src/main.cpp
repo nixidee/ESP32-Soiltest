@@ -63,11 +63,6 @@
 #define MIN_MEASURE_INTERVAL     10   // Minimum Intervall
 #define MAX_MEASURE_INTERVAL     3600 // Maximum Intervall (1 Stunde)
 
-// Deep Sleep Konfiguration
-#define ENABLE_DEEP_SLEEP       false  // Für Tests deaktiviert
-#define ENABLE_WIFI             false  // Für Tests deaktiviert  
-#define ENABLE_WEBSERVER        false  // Für Tests deaktiviert
-
 // Bodenfeuchte Schwellwerte (ADC Werte 0-4095)
 #define SOIL_VERY_DRY           3500  // > 3500: Sehr trocken
 #define SOIL_DRY                2800  // 2800-3500: Trocken
@@ -88,6 +83,11 @@ Adafruit_BME280 bme;
 Preferences preferences;
 WebServer *webServer = nullptr;
 
+// Laufzeitkonfiguration
+bool enableDeepSleep = false;
+bool enableWiFi = false;
+bool enableWebServer = false;
+
 // Zigbee Handles
 static esp_zb_ep_list_t *esp_zb_ep_list = NULL;
 static esp_zb_cluster_list_t *esp_zb_cluster_list = NULL;
@@ -95,7 +95,6 @@ static esp_zb_cluster_list_t *esp_zb_cluster_list = NULL;
 // Status Variablen
 static bool zigbee_initialized = false;
 static bool wifi_enabled = false;
-static bool webserver_enabled = false;
 static uint32_t measure_interval = DEFAULT_MEASURE_INTERVAL;
 static volatile bool button_pressed = false;
 
@@ -487,7 +486,7 @@ void sensorTask(void *pvParameters) {
             }
             
             // Deep Sleep vorbereiten (falls aktiviert)
-            if (ENABLE_DEEP_SLEEP && zigbee_initialized) {
+            if (enableDeepSleep && zigbee_initialized) {
                 ESP_LOGI(TAG, "Gehe in Deep Sleep für %d Sekunden", measure_interval);
                 
                 // Wake-up Timer setzen
@@ -545,7 +544,9 @@ void handleRoot() {
     html += "Messintervall (Sek): <input type='number' name='interval' value='" + String(measure_interval) + "' min='10' max='3600'><br>";
     html += "WiFi SSID: <input type='text' name='ssid' value='" + String(WiFi.SSID()) + "'><br>";
     html += "WiFi Passwort: <input type='password' name='pass'><br>";
-    html += "Deep Sleep: <input type='checkbox' name='deepsleep' " + String(ENABLE_DEEP_SLEEP ? "checked" : "") + "><br>";
+    html += "WiFi aktiv: <input type='checkbox' name='wifi' " + String(enableWiFi ? "checked" : "") + "><br>";
+    html += "Webserver aktiv: <input type='checkbox' name='webserver' " + String(enableWebServer ? "checked" : "") + "><br>";
+    html += "Deep Sleep: <input type='checkbox' name='deepsleep' " + String(enableDeepSleep ? "checked" : "") + "><br>";
     html += "<input type='submit' value='Speichern'>";
     html += "</form>";
     
@@ -603,8 +604,14 @@ void handleConfig() {
         }
     }
     
-    bool deep_sleep = webServer->hasArg("deepsleep");
-    preferences.putBool("deep_sleep", deep_sleep);
+    enableDeepSleep = webServer->hasArg("deepsleep");
+    preferences.putBool("deep_sleep", enableDeepSleep);
+
+    enableWiFi = webServer->hasArg("wifi");
+    preferences.putBool("wifi", enableWiFi);
+
+    enableWebServer = webServer->hasArg("webserver");
+    preferences.putBool("webserver", enableWebServer);
     
     webServer->sendHeader("Location", "/");
     webServer->send(303);
@@ -616,7 +623,7 @@ void handleConfig() {
 void webServerTask(void *pvParameters) {
     ESP_LOGI(TAG, "Web Server Task gestartet auf Core %d", xPortGetCoreID());
     
-    if (!ENABLE_WEBSERVER) {
+    if (!enableWebServer) {
         vTaskDelete(NULL);
         return;
     }
@@ -652,7 +659,7 @@ void IRAM_ATTR buttonISR() {
  * WiFi initialisieren
  */
 void initWiFi() {
-    if (!ENABLE_WIFI) {
+    if (!enableWiFi) {
         ESP_LOGI(TAG, "WiFi deaktiviert");
         return;
     }
@@ -700,6 +707,9 @@ void setup() {
     // Preferences initialisieren
     preferences.begin("sensor_config", false);
     measure_interval = preferences.getUInt("interval", DEFAULT_MEASURE_INTERVAL);
+    enableDeepSleep = preferences.getBool("deep_sleep", false);
+    enableWiFi = preferences.getBool("wifi", false);
+    enableWebServer = preferences.getBool("webserver", false);
     
     // GPIO Setup
     pinMode(SOIL_SENSOR_POWER_PIN, OUTPUT);
@@ -778,7 +788,7 @@ void setup() {
     );
     
     // Web Server Task auf HP Core (falls aktiviert)
-    if (ENABLE_WEBSERVER && wifi_enabled) {
+    if (enableWebServer && wifi_enabled) {
         xTaskCreatePinnedToCore(
             webServerTask,
             "web_task",
