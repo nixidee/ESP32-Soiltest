@@ -105,6 +105,7 @@ struct SensorData {
     float humidity;         // %
     float pressure;         // hPa
     float abs_humidity;     // g/m³
+    float dew_point;        // °C
     uint16_t soil_moisture; // ADC Wert (0-4095)
     uint8_t soil_category;  // 0=sehr trocken, 1=trocken, 2=normal, 3=feucht, 4=zu feucht
     float battery_voltage;  // V
@@ -113,6 +114,9 @@ struct SensorData {
 };
 
 static SensorData current_data;
+
+// Zigbee Attribut für Taupunkt (in 0.01 °C)
+static int16_t attr_dewpoint = 0;
 
 // Task Handles für Dual-Core
 TaskHandle_t zigbeeTaskHandle = NULL;
@@ -133,11 +137,24 @@ float calculateAbsoluteHumidity(float temp, float rel_humidity) {
     float b = 237.7;
     float gamma = (a * temp) / (b + temp) + log(rel_humidity / 100.0);
     float dewPoint = (b * gamma) / (a - gamma);
-    
+
     // Absolute Luftfeuchtigkeit
-    float abs_humidity = 216.7 * ((rel_humidity / 100.0) * 6.112 * 
+    float abs_humidity = 216.7 * ((rel_humidity / 100.0) * 6.112 *
                         exp((17.62 * temp) / (243.12 + temp))) / (273.15 + temp);
     return abs_humidity;
+}
+
+/**
+ * Berechnet den Taupunkt aus Temperatur und relativer Luftfeuchtigkeit
+ * @param temperature Temperatur in °C
+ * @param humidity Relative Luftfeuchtigkeit in %
+ * @return Taupunkt in °C
+ */
+float calculateDewPoint(float temperature, float humidity) {
+    const float a = 17.62f;
+    const float b = 243.12f;
+    float gamma = (a * temperature) / (b + temperature) + log(humidity / 100.0f);
+    return (b * gamma) / (a - gamma);
 }
 
 /**
@@ -225,6 +242,15 @@ void readSensorData() {
         current_data.pressure = bme.readPressure() / 100.0F; // Pa zu hPa
         current_data.abs_humidity = calculateAbsoluteHumidity(
             current_data.temperature, current_data.humidity);
+        current_data.dew_point = calculateDewPoint(
+            current_data.temperature, current_data.humidity);
+        attr_dewpoint = (int16_t)(current_data.dew_point * 100);
+        if (zigbee_initialized) {
+            esp_zb_zcl_set_attr_val(ENDPOINT_ID,
+                ESP_ZB_ZCL_CLUSTER_ID_ANALOG_INPUT,
+                ESP_ZB_ZCL_ATTR_ANALOG_INPUT_PRESENT_VALUE_ID,
+                &attr_dewpoint, sizeof(attr_dewpoint));
+        }
     } else {
         ESP_LOGE(TAG, "BME280 Messung fehlgeschlagen!");
     }
@@ -243,11 +269,12 @@ void readSensorData() {
     ESP_LOGI(TAG, "Luftfeuchtigkeit: %.2f %%", current_data.humidity);
     ESP_LOGI(TAG, "Luftdruck: %.2f hPa", current_data.pressure);
     ESP_LOGI(TAG, "Abs. Luftfeuchtigkeit: %.2f g/m³", current_data.abs_humidity);
-    ESP_LOGI(TAG, "Bodenfeuchte: %d (ADC) - %s", 
-            current_data.soil_moisture, 
+    ESP_LOGI(TAG, "Taupunkt: %.2f °C", current_data.dew_point);
+    ESP_LOGI(TAG, "Bodenfeuchte: %d (ADC) - %s",
+            current_data.soil_moisture,
             soilCategoryToString(current_data.soil_category));
-    ESP_LOGI(TAG, "Batterie: %.2fV (%d%%)", 
-            current_data.battery_voltage, 
+    ESP_LOGI(TAG, "Batterie: %.2fV (%d%%)",
+            current_data.battery_voltage,
             current_data.battery_percent);
 }
 
@@ -359,12 +386,14 @@ static void esp_zb_set_attributes(void) {
     esp_zb_power_config_cluster_add_attr(power_cfg_cluster,
         ESP_ZB_ZCL_ATTR_POWER_CONFIG_BATTERY_PERCENTAGE_REMAINING_ID, &battery_percentage);
     
-    // Analog Input Cluster für Bodenfeuchte
-    esp_zb_attribute_list_t *analog_input_cluster = 
+    // Analog Input Cluster für Taupunkt
+    esp_zb_attribute_list_t *dewpoint_cluster =
         esp_zb_zcl_attr_list_create(ESP_ZB_ZCL_CLUSTER_ID_ANALOG_INPUT);
-    float soil_moisture_scaled = (float)current_data.soil_moisture / 4095.0 * 100.0;
-    esp_zb_analog_input_cluster_add_attr(analog_input_cluster,
-        ESP_ZB_ZCL_ATTR_ANALOG_INPUT_PRESENT_VALUE_ID, &soil_moisture_scaled);
+    esp_zb_custom_cluster_add_custom_attr(dewpoint_cluster,
+        ESP_ZB_ZCL_ATTR_ANALOG_INPUT_PRESENT_VALUE_ID,
+        ESP_ZB_ZCL_ATTR_TYPE_S16,
+        ESP_ZB_ZCL_ATTR_ACCESS_READ_ONLY | ESP_ZB_ZCL_ATTR_ACCESS_REPORTING,
+        &attr_dewpoint);
     
     // Cluster Liste erstellen
     esp_zb_cluster_list = esp_zb_zcl_cluster_list_create();
@@ -373,7 +402,7 @@ static void esp_zb_set_attributes(void) {
     esp_zb_cluster_list_add_humidity_meas_cluster(esp_zb_cluster_list, humidity_cluster, ESP_ZB_ZCL_CLUSTER_SERVER_ROLE);
     esp_zb_cluster_list_add_pressure_meas_cluster(esp_zb_cluster_list, pressure_cluster, ESP_ZB_ZCL_CLUSTER_SERVER_ROLE);
     esp_zb_cluster_list_add_power_config_cluster(esp_zb_cluster_list, power_cfg_cluster, ESP_ZB_ZCL_CLUSTER_SERVER_ROLE);
-    esp_zb_cluster_list_add_analog_input_cluster(esp_zb_cluster_list, analog_input_cluster, ESP_ZB_ZCL_CLUSTER_SERVER_ROLE);
+    esp_zb_cluster_list_add_analog_input_cluster(esp_zb_cluster_list, dewpoint_cluster, ESP_ZB_ZCL_CLUSTER_SERVER_ROLE);
 }
 
 /**
@@ -406,6 +435,12 @@ void sendZigbeeReport() {
     humidity_cmd.clusterID = ESP_ZB_ZCL_CLUSTER_ID_REL_HUMIDITY_MEASUREMENT;
     humidity_cmd.attributeID = ESP_ZB_ZCL_ATTR_REL_HUMIDITY_MEASUREMENT_VALUE_ID;
     esp_zb_zcl_report_attr_cmd_req(&humidity_cmd);
+
+    // Dew Point Report
+    esp_zb_zcl_report_attr_cmd_t dewpoint_cmd = temp_cmd;
+    dewpoint_cmd.clusterID = ESP_ZB_ZCL_CLUSTER_ID_ANALOG_INPUT;
+    dewpoint_cmd.attributeID = ESP_ZB_ZCL_ATTR_ANALOG_INPUT_PRESENT_VALUE_ID;
+    esp_zb_zcl_report_attr_cmd_req(&dewpoint_cmd);
     
     // Weitere Reports für andere Cluster...
     
