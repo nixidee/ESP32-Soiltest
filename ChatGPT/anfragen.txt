@@ -1,0 +1,218 @@
+Ich möchte einen Bodenfeuchtesensor AZ Delivery 1.2 und BME280 an ein ESP32 C6 anschließen, dazu verfügt dieser über einen Solareingang und einen Akkuanschluss. Ziel soll es sein diesen über per Zigbee an zigbee2mqtt (Version 2.6.0) in Home Assistant einzubinden. Die Intervalle in denen er Daten messen und sendet sollen ebenfalls über Zigbee einstellbar sein. Zum testen starten wir da mit kleinen Intervallen (2x pro Minute), der Standardwert soll natürlich per variable im Code einstellbar sein. Per Tastendruck (zum testen nutzen wir die Programm Taste, der Pin soll konfigurierbar sein) sollen die Daten ebenfall gemessen und entsprechend gesendet werden. Folgende Daten sollen übertragen werden; Bodenfeuchte (im Code per kommentar auch bereiche angeben die sehr trocken, trocken, normal, feucht und zu feucht). Luftdruck, Temperatur, Luftfeuchte relativ, Luftfeuchte absolut, Akkustand, Ladespannung (falls möglich). Es soll wenn möglich mit Deepsleep gearbeitet werden. Dies soll ebenfalls Konfigurierbar (Webseite auf ESP 32 oder im Code). Dazu soll er sich ins lokale WLAN einwählen (ssid und pw auch über zigbee konfigurierbar), die ssid und das pw werden erstmal im code angegeben (als default Werte, sollen wie gesagt über zigbee änderbar sein). Der Webserver kann ebenfalls über Zigbee ein und ausgeschalten werden. Hier bitte auch so optimieren dass die beiden Kerne entsprechend genutzt werden (der LP Kern für alles was Stromsparend immer laufen muss, die Intensiven Sachen wie Webserver, Wifi etc. auf dem HP Kern).
+
+Es wird folgender ESP32 genutzt:
+https://wiki.dfrobot.com/SKU_DFR1075_FireBeetle_2_Board_ESP32_C6
+
+AZ Delivery Bodenfeuchte Sensor:
+https://www.az-delivery.de/products/bodenfeuchte-sensor-modul-v1-2
+
+Anbei ein Beispielprogramm, hier sind die Pins richtig und das auslesen vom Bodenfeuchte Senor, Batteriesensor und BME280 haben funktioniert. Der Rest soll igroniert werden.
+
+Áls Umgebung nutze ich PlatformIO unter Jetbrains CLion (beides in der aktuellsten Version) unter Windows 10. Benutze die aktuellsten Pakete, suche nach aktuellen Hinweisen was Probleme mit Hard und Software angeht, insbesondere Probleme mit dem Firebeetle 2, ESP32 C6 und Zigbee2MQTT und Deepsleep Möglichkeiten. Prüfe den Code sehr gründlich auf Fehler, er soll robust laufen. Zum testen und einreichten kann Deepsleep, WiFi und Webserver im code abgeschalten werden. Es sollte natürlich alles zusammen laufen. Beachte auch die besonderheiten von PlatformIO und Espresif bzw. den ESP32-C6 im besonderen. Arbeite sehr sorgfältig, strukturiere den Code sauber, kommentiere gründlich was der Code macht, wo ggf. stolperfallen sind und wo man bei Problemen ggf. justieren kann. Gibt den vollständigen Code für den ESP32 hier an und auch als zip zum Download an. Für Zigbee2MQTT ebenfalls die nötigen Sachen, vor allem den external converter der zum Projektcode passen soll. Für Home Assistant brauche ich keinen Code, da kann ich alles selbst einbinden. Recherchiere bitte sehr gründlich und überprüfe den Code auf Fehler.
+
+
+Veralteter Beispiel Code unter Arduino IDE, die PINs sind korrekt. Bitte explizit den Code ansonsten nicht weiter verwenden, nur Pins und Berechnungen beachten.
+#include <Arduino.h>
+#include <Wire.h>
+#include <SPI.h>
+#include <GxEPD2_BW.h>
+#include <Fonts/FreeMonoBold9pt7b.h>
+#include <Adafruit_BME280.h>
+#include <Adafruit_Sensor.h>
+#include <Adafruit_NeoPixel.h>
+
+// ===== Einstellungen =====
+static const uint32_t UPDATE_SEC = 10;    // Alles-Update-Intervall
+// ===== Pins FireBeetle 2 ESP32-C6 =====
+#define EPD_CS    18
+#define EPD_DC    19
+#define EPD_RST   14
+#define EPD_BUSY   7
+#define EPD_SCK   23
+#define EPD_MOSI  22
+#define EPD_MISO  -1
+
+#define I2C_SDA   4    // BME280
+#define I2C_SCL   8
+
+#define PIN_SOIL   2    // Bodenfeuchte (ADC)
+#define PIN_NEOPX  5    // WS2812 DIN
+#define PIN_BAT    0    // Akku-ADC
+
+// ===== Display =====
+using Panel = GxEPD2_154;
+GxEPD2_BW<Panel, Panel::HEIGHT> display(Panel(EPD_CS, EPD_DC, EPD_RST, EPD_BUSY));
+
+// ===== Sensoren =====
+Adafruit_BME280 bme;
+bool bmeOK = false;
+uint8_t bmeAddr = 0x76;
+
+// ===== NeoPixel =====
+#define N_PIXELS 1
+Adafruit_NeoPixel strip(N_PIXELS, PIN_NEOPX, NEO_GRB + NEO_KHZ800);
+uint8_t  ledStep     = 0;
+
+// ===== Bodenfeuchte Kalibrierung =====
+const int SOIL_RAW_WET = 1300;
+const int SOIL_RAW_DRY = 3000;
+const int ADC_MAX      = 4095;
+
+// ===== Akku =====
+const float BAT_DIVIDER = 2.0f;
+const float ADC_REF_V   = 3.3f;
+
+// ===== Timing =====
+uint32_t nextUpdateMs = 0;
+
+// ===== Hilfsfunktionen =====
+float absoluteHumidity(float T_C, float RH) {
+  if (isnan(T_C) || isnan(RH)) return NAN;
+  const float es = 6.112f * expf((17.62f * T_C) / (243.12f + T_C));
+  const float e  = (RH / 100.0f) * es;
+  return 216.7f * e / (T_C + 273.15f);
+}
+float soilPercentFromRaw(int raw) {
+  raw = constrain(raw, 0, ADC_MAX);
+  float p = (float)(raw - SOIL_RAW_WET) / (float)(SOIL_RAW_DRY - SOIL_RAW_WET);
+  p = 1.0f - constrain(p, 0.0f, 1.0f);
+  return p * 100.0f;
+}
+float readBatteryVoltage() {
+  const int N = 8;
+  uint32_t sum = 0;
+  for (int i=0;i<N;i++) { sum += analogRead(PIN_BAT); delay(2); }
+  int raw = sum / N;
+  return (raw * ADC_REF_V / ADC_MAX) * BAT_DIVIDER;
+}
+const char* ledName(uint8_t step) {
+  switch (step % 5) { case 0: return "Rot"; case 1: return "Gruen";
+    case 2: return "Blau"; case 3: return "Gelb"; default: return "Weiss"; }
+}
+void setLedStep(uint8_t step) {
+  uint32_t c;
+  switch (step % 5) {
+    case 0: c = strip.Color(255,   0,   0); break;
+    case 1: c = strip.Color(  0, 255,   0); break;
+    case 2: c = strip.Color(  0,   0, 255); break;
+    case 3: c = strip.Color(255, 200,   0); break;
+    default:c = strip.Color(255, 255, 255); break;
+  }
+  strip.setPixelColor(0, c);
+  strip.show();
+}
+static inline void epdPage(std::function<void()> fn) {
+  display.setFullWindow();
+  display.firstPage();
+  do { fn(); } while (display.nextPage());
+}
+void drawPage(float tC, float rH, float aH, float pHpa, float soilPct, float vBat, const char* ledTxt, bool bmeOk) {
+  epdPage([&](){
+    display.fillScreen(GxEPD_WHITE);
+    display.setFont(&FreeMonoBold9pt7b);
+    display.setTextColor(GxEPD_BLACK);
+
+    const int16_t x = 8; int16_t y = 24; const int16_t dy = 20;
+
+    display.setCursor(x, y);
+    display.print(F("T: "));  isnan(tC)? display.print(F("N/A")) : display.print(String(tC,1)); display.print(F(" C"));
+    display.setCursor(x, y+dy);
+    display.print(F("rF: ")); isnan(rH)? display.print(F("N/A")) : display.print(String(rH,1)); display.print(F(" %"));
+    display.setCursor(x, y+2*dy);
+    display.print(F("absF: ")); isnan(aH)? display.print(F("N/A")) : display.print(String(aH,1)); display.print(F(" g/m3"));
+    display.setCursor(x, y+3*dy);
+    display.print(F("P: ")); isnan(pHpa)? display.print(F("N/A")) : display.print(String(pHpa,1)); display.print(F(" hPa"));
+    display.setCursor(x, y+4*dy);
+    display.print(F("Soil: ")); display.print(String(soilPct,0)); display.print(F(" %"));
+    display.setCursor(x, y+5*dy);
+    display.print(F("Akku: ")); display.print(String(vBat,2)); display.print(F(" V"));
+    display.setCursor(x, y+6*dy);
+    display.print(F("LED: ")); display.print(ledTxt);
+
+    display.setCursor(x, 196);
+    display.print(F("Update ")); display.print(UPDATE_SEC); display.print(F("s | BME "));
+    display.print(bmeOk ? F("OK") : F("NOK"));
+  });
+}
+
+// ===== Setup =====
+void setup() {
+  Serial.begin(115200);
+  delay(1200);
+  Serial.println(F("\n[boot] FireBeetle 2 C6 – BME280 + EPD + Soil + Akku"));
+
+  // NeoPixel
+  strip.begin();
+  strip.setBrightness(25);
+  strip.show();
+  setLedStep(ledStep);
+
+  // ADC vorbereiten
+  analogReadResolution(12);
+  analogSetPinAttenuation(PIN_BAT,  ADC_11db);
+  analogSetPinAttenuation(PIN_SOIL, ADC_11db);
+
+  // I2C
+  Wire.begin(I2C_SDA, I2C_SCL, 100000);
+  bmeOK = bme.begin(0x76);
+  if (!bmeOK) { bmeOK = bme.begin(0x77); if (bmeOK) bmeAddr = 0x77; }
+  Serial.printf("[BME] init %s (addr 0x%02X)\n", bmeOK ? "OK" : "FAIL", bmeAddr);
+
+  if (bmeOK) {
+    bme.setSampling(
+      Adafruit_BME280::MODE_NORMAL,
+      Adafruit_BME280::SAMPLING_X2,
+      Adafruit_BME280::SAMPLING_X2,
+      Adafruit_BME280::SAMPLING_X2,
+      Adafruit_BME280::FILTER_X2,
+      Adafruit_BME280::STANDBY_MS_125
+    );
+  }
+
+  // ePaper
+  pinMode(EPD_CS,  OUTPUT);
+  pinMode(EPD_DC,  OUTPUT);
+  pinMode(EPD_RST, OUTPUT);
+  pinMode(EPD_BUSY, INPUT);
+  SPI.begin(EPD_SCK, EPD_MISO, EPD_MOSI, EPD_CS);
+  digitalWrite(EPD_RST, LOW);  delay(40);
+  digitalWrite(EPD_RST, HIGH); delay(200);
+  display.init(0, true, 10, false);
+  display.setRotation(0);
+
+  // Startseite
+  epdPage([&](){
+    display.fillScreen(GxEPD_WHITE);
+    display.setFont(&FreeMonoBold9pt7b);
+    display.setCursor(8, 24);
+    display.print(F("Starte Sensoren..."));
+  });
+
+  nextUpdateMs = millis();
+}
+
+// ===== Loop =====
+void loop() {
+  if ((int32_t)(millis() - nextUpdateMs) >= 0) {
+    nextUpdateMs += UPDATE_SEC * 1000UL;
+
+    ledStep++;
+    setLedStep(ledStep);
+
+    float tC = NAN, rH = NAN, pHpa = NAN;
+    if (bmeOK) {
+      tC   = bme.readTemperature();
+      rH   = bme.readHumidity();
+      pHpa = bme.readPressure() / 100.0f;
+    }
+    float aH      = absoluteHumidity(tC, rH);
+    int   rawSoil = analogRead(PIN_SOIL);
+    float soilPct = soilPercentFromRaw(rawSoil);
+    float vBat    = readBatteryVoltage();
+
+    Serial.printf("[SENS] BME=%d  T=%.1fC  rF=%.1f%%  absF=%.1fg/m3  P=%.1fhPa  soilRaw=%d->%.0f%%  Vbat=%.2fV\n",
+                  bmeOK, tC, rH, aH, pHpa, rawSoil, soilPct, vBat);
+
+    drawPage(tC, rH, aH, pHpa, soilPct, vBat, ledName(ledStep), bmeOK);
+  }
+}

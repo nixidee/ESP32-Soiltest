@@ -1,0 +1,16 @@
+######### Anfrage 1
+
+Ich möchte einen Bodenfeuchtesensor AZ Delivery 1.2 und BME280 an ein ESP32 C6 anschließen, dazu verfügt dieser über einen Solareingang und einen Akkuanschluss. Ziel soll es sein diesen über per Zigbee an zigbee2mqtt (Version 2.6.0) in Home Assistant einzubinden. Die Intervalle in denen er Daten messen und sendet sollen ebenfalls über Zigbee einstellbar sein. Zum testen starten wir da mit kleinen Intervallen (2x pro Minute), der Standardwert soll natürlich per variable im Code einstellbar sein. Per Tastendruck (zum testen nutzen wir die Programm Taste, der Pin soll konfigurierbar sein) sollen die Daten ebenfall gemessen und entsprechend gesendet werden. Folgende Daten sollen übertragen werden; Bodenfeuchte (im Code per kommentar auch bereiche angeben die sehr trocken, trocken, normal, feucht und zu feucht). Luftdruck, Temperatur, Luftfeuchte relativ, Luftfeuchte absolut, Akkustand, Ladespannung (falls möglich). Es soll wenn möglich mit Deepsleep gearbeitet werden. Dies soll ebenfalls Konfigurierbar (Webseite auf ESP 32 oder im Code). Dazu soll er sich ins lokale WLAN einwählen (ssid und pw auch über zigbee konfigurierbar), die ssid und das pw werden erstmal im code angegeben (als default Werte, sollen wie gesagt über zigbee änderbar sein). Der Webserver kann ebenfalls über Zigbee ein und ausgeschalten werden. Hier bitte auch so optimieren dass die beiden Kerne entsprechend genutzt werden (der LP Kern für alles was Stromsparend immer laufen muss, die Intensiven Sachen wie Webserver, Wifi etc. auf dem HP Kern).
+
+Es wird folgender ESP32 genutzt:
+https://wiki.dfrobot.com/SKU_DFR1075_FireBeetle_2_Board_ESP32_C6
+
+AZ Delivery Bodenfeuchte Sensor:
+https://www.az-delivery.de/products/bodenfeuchte-sensor-modul-v1-2
+
+Anbei ein Beispielprogramm, hier sind die Pins richtig und das auslesen vom Bodenfeuchte Senor, Batteriesensor und BME280 haben funktioniert. Der Rest soll igroniert werden.
+
+Áls Umgebung nutze ich PlatformIO unter Jetbrains CLion (beides in der aktuellsten Version) unter Windows 10. Benutze die aktuellsten Pakete, suche nach aktuellen Hinweisen was Probleme mit Hard und Software angeht, insbesondere Probleme mit dem Firebeetle 2, ESP32 C6 und Zigbee2MQTT und Deepsleep Möglichkeiten. Prüfe den Code sehr gründlich auf Fehler, er soll robust laufen. Zum testen und einreichten kann Deepsleep, WiFi und Webserver im code abgeschalten werden. Es sollte natürlich alles zusammen laufen. Beachte auch die besonderheiten von PlatformIO und Espresif bzw. den ESP32-C6 im besonderen. Arbeite sehr sorgfältig, strukturiere den Code sauber, kommentiere gründlich was der Code macht, wo ggf. stolperfallen sind und wo man bei Problemen ggf. justieren kann. Gibt den vollständigen Code für den ESP32 hier an und auch als zip zum Download an. Für Zigbee2MQTT ebenfalls die nötigen Sachen, vor allem den external converter der zum Projektcode passen soll. Für Home Assistant brauche ich keinen Code, da kann ich alles selbst einbinden. Recherchiere bitte sehr gründlich und überprüfe den Code auf Fehler.
+
+
+######### Ende Anfrage 1

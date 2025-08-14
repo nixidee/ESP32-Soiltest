@@ -1,0 +1,24 @@
+# Name,     Type, SubType,  Offset,   Size,     Flags
+# Zigbee Partition Table for ESP32-C6 with 4MB Flash
+# Optimiert für Zigbee End Device mit OTA Support
+
+nvs,        data, nvs,      0x9000,   0x6000,
+otadata,    data, ota,      0xf000,   0x2000,
+phy_init,   data, phy,      0x11000,  0x1000,
+factory,    app,  factory,  0x20000,  0x140000,
+ota_0,      app,  ota_0,    0x160000, 0x140000,
+zb_storage, data, fat,      0x2A0000, 0x4000,
+zb_fct,     data, fat,      0x2A4000, 0x1000,
+coredump,   data, coredump, 0x2A5000, 0x10000,
+spiffs,     data, spiffs,   0x2B5000, 0x14B000,
+
+# Erklärung der Partitionen:
+# nvs:        Non-Volatile Storage für WiFi Credentials und Einstellungen (24KB)
+# otadata:    OTA Daten für Update-Verwaltung (8KB)
+# phy_init:   PHY Initialisierungsdaten (4KB)
+# factory:    Haupt-Applikation (1280KB)
+# ota_0:      OTA Update Partition (1280KB)
+# zb_storage: Zigbee Network Storage (16KB) - Wichtig für Zigbee!
+# zb_fct:     Zigbee Factory Data (4KB) - Wichtig für Zigbee!
+# coredump:   Core Dump für Debugging (64KB)
+# spiffs:     SPIFFS Dateisystem für Webserver-Dateien (1324KB)
