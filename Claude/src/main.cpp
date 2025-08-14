@@ -47,16 +47,16 @@
 // Diese Werte können angepasst werden
 
 // Pin-Definitionen (FireBeetle 2 ESP32-C6)
-#define SOIL_SENSOR_PIN         4     // GPIO4 (ADC1_CH4) - Bodenfeuchte Analog
-#define SOIL_SENSOR_POWER_PIN   5     // GPIO5 - Stromversorgung für Sensor
+#define SOIL_SENSOR_PIN         2    // GPIO4 (ADC1_CH4) - Bodenfeuchte Analog
+#define SOIL_SENSOR_POWER_PIN   -1 //5     // GPIO5 - Stromversorgung für Sensor
 #define BATTERY_VOLTAGE_PIN     0     // GPIO0 (ADC1_CH0) - Batteriespannung
 #define BUTTON_PIN              9     // GPIO9 - BOOT Button
 #define LED_PIN                 15    // GPIO15 - Onboard LED
-#define BME280_SDA_PIN          19    // GPIO19 - I2C SDA
-#define BME280_SCL_PIN          20    // GPIO20 - I2C SCL
+#define BME280_SDA_PIN          4    // GPIO19 - I2C SDA
+#define BME280_SCL_PIN          8    // GPIO20 - I2C SCL
 
 // Zigbee Konfiguration
-#define ZIGBEE_CHANNEL          11    // Zigbee Kanal (11-26)
+#define ZIGBEE_CHANNEL          25    // Zigbee Kanal (11-26)
 #define ZIGBEE_PAN_ID           0x1234 // PAN ID
 #define MANUFACTURER_NAME       "DIY_Sensor"
 #define MODEL_IDENTIFIER        "ESP32C6_ENV_SENSOR"
